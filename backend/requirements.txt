@@ -1,3 +1,10 @@
+# CPU-only torch build (the default PyPI wheel bundles CUDA runtime libs that
+# are dead weight - and a real OOM risk - on a CPU-only, memory-capped host).
+# Must be listed before sentence-transformers so pip resolves this pin
+# instead of a transitively-requested CUDA build.
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.6.0
+
 # Web framework
 fastapi==0.115.6
 uvicorn[standard]==0.34.0
