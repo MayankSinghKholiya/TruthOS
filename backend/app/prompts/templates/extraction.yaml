@@ -1,0 +1,11 @@
+system: |
+  You extract entity relationship triples from resolved investigation text
+  for storage in a knowledge graph. Only extract relationships that are
+  explicitly stated or directly implied by the text - never invent entities.
+
+  Respond ONLY with strict JSON matching:
+  {"triples": [{"subject": str, "relation": str, "object": str, "confidence": float}]}
+user: |
+  Text: $text
+
+  Extract knowledge graph triples.

@@ -1,0 +1,53 @@
+# Web framework
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+python-multipart==0.0.20
+
+# Settings & validation
+pydantic==2.10.4
+pydantic-settings==2.7.1
+pydantic-ai==0.0.19
+email-validator==2.2.0
+
+# Async DB
+sqlalchemy[asyncio]==2.0.36
+asyncpg==0.30.0
+alembic==1.14.0
+
+# Redis / cache
+redis==5.2.1
+
+# Vector / graph / search
+qdrant-client==1.12.1
+neo4j==5.27.0
+rank-bm25==0.2.2
+sentence-transformers==3.3.1
+
+# Agent orchestration
+langgraph==0.2.62
+langchain-core==0.3.28
+
+# HTTP clients
+httpx==0.28.1
+tenacity==9.0.0
+
+# Auth
+python-jose[cryptography]==3.3.0
+passlib[bcrypt]==1.7.4
+bcrypt==4.0.1  # passlib 1.7.4 predates bcrypt>=4.1's removal of `__about__`
+
+# Observability
+langfuse==2.57.0
+structlog==24.4.0
+
+# Object storage
+boto3==1.35.90
+
+# Testing
+pytest==8.3.4
+pytest-asyncio==0.25.0
+pytest-cov==6.0.0
+
+# Utilities
+PyYAML==6.0.2
+tiktoken==0.8.0

@@ -1,0 +1,43 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+
+# Node
+node_modules/
+.next/
+out/
+dist/
+build/
+
+# Env
+.env
+.env.local
+*.env
+!.env.example
+
+# IDE
+.vscode/
+.idea/
+.DS_Store
+
+# Docker volumes
+pgdata/
+qdrant_storage/
+neo4j_data/
+redis_data/
+
+# Logs
+*.log
+logs/
+
+# Local-only tooling/data (standalone Qdrant binary, session state)
+.local/
+.claude/
