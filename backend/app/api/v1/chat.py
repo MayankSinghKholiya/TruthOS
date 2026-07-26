@@ -1,36 +1,60 @@
 """Chat endpoints: session management plus the streaming query endpoint that
 drives the full Planner -> Courtroom -> Judge -> Writer pipeline and streams
-per-agent progress events over SSE."""
+per-agent progress events over SSE. Also the agent-callable (X-API-Key)
+Verified Answers endpoints - the Chatbot service's counterpart to Court's
+POST /disputes/agent, for callers (e.g. the OKX ASP bridge) that need a
+plain request/response instead of holding open an SSE connection."""
 import hashlib
 import json
+from typing import Any
 from uuid import UUID
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, BackgroundTasks, Depends
 from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_current_user, get_db, get_memory_manager, get_orchestrator
-from app.core.container import get_redis
+from app.api.deps import (
+    get_agent_api_key,
+    get_current_user,
+    get_db,
+    get_hybrid_retriever,
+    get_knowledge_graph,
+    get_llm_router,
+    get_market_data_service,
+    get_memory_manager,
+    get_orchestrator,
+)
+from app.core.container import get_qdrant, get_redis
 from app.core.exceptions import NotFoundError
 from app.core.logging import get_logger
+from app.db.models.api_key import ApiKey
 from app.db.models.report import Report
 from app.db.models.session_model import ChatMessage, ChatSession
 from app.db.models.user import User
+from app.db.session import get_session_factory
 from app.graph.orchestrator import Orchestrator
+from app.memory.episodic import EpisodicMemoryStore
 from app.memory.manager import MemoryManager
+from app.memory.project import ProjectMemoryStore
+from app.memory.semantic import SemanticMemory
 from app.schemas.chat import (
+    AgentChatQueryCreate,
     ChatMessageRead,
     ChatQueryRequest,
     ChatSessionCreate,
     ChatSessionRead,
 )
+from app.api.v1.reports import to_layered_report
+from app.schemas.report import LayeredReport
+from app.services.callback import notify_callback
 
 logger = get_logger(__name__)
 
 router = APIRouter(prefix="/chat", tags=["chat"])
 
 _REPORT_CACHE_TTL_SECONDS = 600  # 10 min - long enough to absorb a demo re-running the same query
+_IDEMPOTENCY_TTL_SECONDS = 60 * 60 * 24  # 24h - long enough to cover client retry windows
 
 
 def _report_cache_key(user_id: UUID, query: str) -> str:
@@ -147,33 +171,105 @@ async def query(
             await redis.set(cache_key, json.dumps(report), ex=_REPORT_CACHE_TTL_SECONDS)
 
         if report:
-            report_row = Report(
-                session_id=session.id,
-                query=report["query"],
-                verdict=report["verdict"],
-                executive_summary=report["executive_summary"],
-                confidence_score=report["confidence"]["overall"],
-                confidence_breakdown=report["confidence"],
-                evidence=report["evidence"],
-                counter_arguments=report["counter_arguments"],
-                deep_dive=report["deep_dive"],
-                references=report["references"],
-                agent_trace=report["agent_trace"],
-                entity_ambiguity=report.get("entity_ambiguity"),
-            )
-            db.add(report_row)
-            await db.flush()
-
-            assistant_message = ChatMessage(
-                session_id=session.id,
-                role="assistant",
-                content=report.get("executive_summary", ""),
-                meta={"report_id": str(report_row.id)},
-            )
-            db.add(assistant_message)
+            await _persist_report(db, session.id, report)
             await db.commit()
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+
+async def _persist_report(db: AsyncSession, session_id: UUID, report: dict[str, Any]) -> Report:
+    """Shared by the human SSE stream and the agent background task: saves
+    the orchestrator's report dict as a Report row plus its paired assistant
+    ChatMessage. Caller commits - this only flushes, so the human path can
+    still bundle it into one transaction with its cache write."""
+    report_row = Report(
+        session_id=session_id,
+        query=report["query"],
+        verdict=report["verdict"],
+        executive_summary=report["executive_summary"],
+        confidence_score=report["confidence"]["overall"],
+        confidence_breakdown=report["confidence"],
+        evidence=report["evidence"],
+        counter_arguments=report["counter_arguments"],
+        deep_dive=report["deep_dive"],
+        references=report["references"],
+        agent_trace=report["agent_trace"],
+        entity_ambiguity=report.get("entity_ambiguity"),
+    )
+    db.add(report_row)
+    await db.flush()
+
+    assistant_message = ChatMessage(
+        session_id=session_id,
+        role="assistant",
+        content=report.get("executive_summary", ""),
+        meta={"report_id": str(report_row.id)},
+    )
+    db.add(assistant_message)
+    return report_row
+
+
+@router.post("/agent/query", response_model=ChatSessionRead, status_code=201)
+async def create_agent_query(
+    payload: AgentChatQueryCreate,
+    background_tasks: BackgroundTasks,
+    api_key: ApiKey = Depends(get_agent_api_key),
+    db: AsyncSession = Depends(get_db),
+) -> ChatSession:
+    """Agent-callable Verified Answers query (A2A) - the Chatbot service's
+    counterpart to Court's POST /disputes/agent. Runs the full research
+    pipeline in the background and returns the session immediately; the
+    caller polls GET /chat/agent/sessions/{id}/report with the same key, or
+    supplies callback_url to be notified instead."""
+    redis = get_redis()
+    idempotency_cache_key = (
+        f"idempotency:chat:{api_key.wallet_id}:{payload.idempotency_key}"
+        if payload.idempotency_key
+        else None
+    )
+
+    if idempotency_cache_key:
+        existing_id = await redis.get(idempotency_cache_key)
+        if existing_id:
+            existing = await db.get(ChatSession, UUID(existing_id))
+            if existing is not None:
+                return existing
+
+    session = ChatSession(user_id=api_key.created_by_user_id, title=payload.query[:80])
+    db.add(session)
+    await db.flush()
+
+    user_message = ChatMessage(session_id=session.id, role="user", content=payload.query)
+    db.add(user_message)
+    await db.commit()
+    await db.refresh(session)
+
+    if idempotency_cache_key:
+        await redis.set(idempotency_cache_key, str(session.id), ex=_IDEMPOTENCY_TTL_SECONDS)
+
+    background_tasks.add_task(
+        _run_agent_query_and_notify, session.id, payload.query, api_key.created_by_user_id, payload.callback_url
+    )
+    return session
+
+
+@router.get("/agent/sessions/{session_id}/report", response_model=LayeredReport)
+async def get_agent_report(
+    session_id: UUID,
+    api_key: ApiKey = Depends(get_agent_api_key),
+    db: AsyncSession = Depends(get_db),
+) -> LayeredReport:
+    session = await db.get(ChatSession, session_id)
+    if session is None or session.user_id != api_key.created_by_user_id:
+        raise NotFoundError("Chat session not found")
+
+    result = await db.execute(
+        select(Report).where(Report.session_id == session_id).order_by(Report.created_at.desc())
+    )
+    report = result.scalars().first()
+    if report is None:
+        raise NotFoundError("Report not yet available")
+    return to_layered_report(report)
 
 
 async def _get_owned_session(db: AsyncSession, session_id: UUID, user_id: UUID) -> ChatSession:
@@ -189,3 +285,46 @@ async def _create_default_session(db: AsyncSession, user_id: UUID, query: str) -
     await db.flush()
     await db.refresh(session)
     return session
+
+
+async def _run_agent_query_and_notify(
+    session_id: UUID, query: str, user_id: UUID, callback_url: str | None
+) -> None:
+    """Runs on FastAPI's BackgroundTasks executor, strictly after the
+    triggering request's response has been sent - it must not touch that
+    request's (by-then-closed) DB session, so it opens its own via the same
+    session factory `get_db_session` uses (same pattern as Court's
+    _run_arbitration_and_notify)."""
+    session_factory = get_session_factory()
+    async with session_factory() as db:
+        try:
+            memory_manager = MemoryManager(
+                SemanticMemory(get_qdrant()), EpisodicMemoryStore(db), ProjectMemoryStore(db)
+            )
+            memory_context = await memory_manager.recall_context(user_id=user_id, query=query)
+            orchestrator = Orchestrator(
+                get_llm_router(),
+                get_hybrid_retriever(),
+                get_knowledge_graph(),
+                memory_manager,
+                get_market_data_service(),
+            )
+
+            report_data: dict[str, Any] | None = None
+            async for event in orchestrator.stream(
+                query=query, user_id=user_id, session_id=session_id, memory_context=memory_context
+            ):
+                if event.type == "report_ready":
+                    report_data = event.data
+
+            if report_data is None:
+                return
+
+            report_row = await _persist_report(db, session_id, report_data)
+            await db.commit()
+            await db.refresh(report_row)
+
+            if callback_url:
+                await notify_callback(callback_url, to_layered_report(report_row).model_dump(mode="json"))
+        except Exception as exc:  # noqa: BLE001 - background task, nothing above can catch this
+            logger.error("agent_chat_background_failed", session_id=str(session_id), error=str(exc), exc_info=True)

@@ -4,7 +4,6 @@ from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID
 
-import httpx
 from fastapi import APIRouter, BackgroundTasks, Depends, Query
 from fastapi.responses import StreamingResponse
 from sqlalchemy import or_, select
@@ -38,6 +37,7 @@ from app.schemas.dispute import (
     EvidenceInput,
     ReputationRead,
 )
+from app.services.callback import notify_callback
 from app.services.chain_verification import ChainVerificationService
 from app.services.reputation import DEFAULT_TRUST_SCORE, standing_label
 from app.services.telegram_bot import TelegramBotService
@@ -97,7 +97,15 @@ async def create_agent_dispute(
     that person's normal (JWT-authed) dispute list too. Arbitration starts
     automatically in the background; the caller polls GET /disputes/agent/{id}
     (or /verdict) with the same key, or supplies callback_url to be notified
-    instead."""
+    instead.
+
+    Exception: a bridge key (api_key.is_bridge) is a trusted neutral relay -
+    e.g. the OKX ASP marketplace integration - arbitrating disputes between
+    two other wallets it isn't itself a party to, so for that key type alone
+    payload.claimant_wallet_id (when supplied) wins over the key's own
+    wallet_id. A non-bridge key can never override its own identity this
+    way, regardless of what it puts in the payload."""
+    claimant_wallet_id = _resolve_claimant_wallet_id(api_key, payload)
     redis = get_redis()
     idempotency_cache_key = (
         f"idempotency:dispute:{api_key.wallet_id}:{payload.idempotency_key}"
@@ -116,7 +124,7 @@ async def create_agent_dispute(
 
     dispute = Dispute(
         filed_by_user_id=api_key.created_by_user_id,
-        claimant_wallet_id=api_key.wallet_id,
+        claimant_wallet_id=claimant_wallet_id,
         respondent_wallet_id=payload.respondent_wallet_id,
         task_description=payload.task_description,
         agreed_deliverable=payload.agreed_deliverable,
@@ -213,7 +221,7 @@ async def get_agent_dispute(
     api_key: ApiKey = Depends(get_agent_api_key),
     db: AsyncSession = Depends(get_db),
 ) -> Dispute:
-    return await _get_wallet_dispute(db, dispute_id, api_key.wallet_id)
+    return await _get_agent_dispute(db, dispute_id, api_key)
 
 
 @router.get("/disputes/agent/{dispute_id}/verdict", response_model=DisputeVerdictRead)
@@ -222,7 +230,7 @@ async def get_agent_verdict(
     api_key: ApiKey = Depends(get_agent_api_key),
     db: AsyncSession = Depends(get_db),
 ) -> DisputeVerdict:
-    await _get_wallet_dispute(db, dispute_id, api_key.wallet_id)
+    await _get_agent_dispute(db, dispute_id, api_key)
     return await _load_verdict_or_404(db, dispute_id)
 
 
@@ -334,6 +342,19 @@ async def get_reputation_history(
 # ---- helpers ----------------------------------------------------------------
 
 
+def _resolve_claimant_wallet_id(api_key: ApiKey, payload: AgentDisputeCreate) -> str:
+    """A regular agent key can only ever file as the wallet it holds a key
+    for - claimant_wallet_id is always forced to api_key.wallet_id, ignoring
+    anything the payload supplies. A bridge key (api_key.is_bridge) is a
+    trusted neutral relay that arbitrates disputes between two OTHER
+    wallets, so its explicit payload.claimant_wallet_id wins when given -
+    falling back to the bridge's own wallet_id only if it left the field
+    unset."""
+    if api_key.is_bridge and payload.claimant_wallet_id:
+        return payload.claimant_wallet_id
+    return api_key.wallet_id
+
+
 async def _attach_verified_evidence(
     dispute: Dispute,
     evidence_inputs: list[EvidenceInput],
@@ -400,6 +421,21 @@ async def _get_wallet_dispute(db: AsyncSession, dispute_id: UUID, wallet_id: str
     if dispute is None or wallet_id not in (dispute.claimant_wallet_id, dispute.respondent_wallet_id):
         raise NotFoundError("Dispute not found")
     return dispute
+
+
+async def _get_agent_dispute(db: AsyncSession, dispute_id: UUID, api_key: ApiKey) -> Dispute:
+    """Polling-scope check for the agent GET routes. A regular key must be a
+    named party (claimant or respondent) on the dispute. A bridge key never
+    is - it filed the dispute on behalf of two other wallets - so it's
+    scoped by filer identity instead: any dispute created through its own
+    POST /disputes/agent call (filed_by_user_id == the bridge key's human
+    owner)."""
+    if api_key.is_bridge:
+        dispute = await db.get(Dispute, dispute_id, options=[selectinload(Dispute.evidence)])
+        if dispute is None or dispute.filed_by_user_id != api_key.created_by_user_id:
+            raise NotFoundError("Dispute not found")
+        return dispute
+    return await _get_wallet_dispute(db, dispute_id, api_key.wallet_id)
 
 
 async def _notify_dispute_filed_background(dispute_id: UUID) -> None:
@@ -503,17 +539,7 @@ async def _run_arbitration_and_notify(dispute_id: UUID) -> None:
                 evidence=evidence,
             )
             if dispute.callback_url:
-                await _notify_callback(dispute.callback_url, verdict.model_dump(mode="json"))
+                await notify_callback(dispute.callback_url, verdict.model_dump(mode="json"))
             await _notify_after_verdict(session, dispute, evidence)
         except Exception as exc:  # noqa: BLE001 - background task, nothing above can catch this
             logger.error("background_arbitration_failed", dispute_id=str(dispute_id), error=str(exc), exc_info=True)
-
-
-async def _notify_callback(callback_url: str, verdict_payload: dict[str, Any]) -> None:
-    try:
-        response = await get_http_client().post(
-            callback_url, json=verdict_payload, timeout=httpx.Timeout(10.0, connect=5.0)
-        )
-        response.raise_for_status()
-    except (httpx.HTTPError, httpx.TimeoutException) as exc:
-        logger.warning("dispute_callback_failed", callback_url=callback_url, error=str(exc))

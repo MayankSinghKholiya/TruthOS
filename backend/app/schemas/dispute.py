@@ -32,10 +32,15 @@ class DisputeCreate(BaseModel):
 
 class AgentDisputeCreate(BaseModel):
     """Filing shape for the agent-callable POST /disputes/agent endpoint.
-    claimant_wallet_id is deliberately absent - it's derived from the caller's
+    claimant_wallet_id is normally absent - it's derived from the caller's
     API key so an agent can never file a dispute claiming to be a wallet it
-    doesn't hold a key for."""
+    doesn't hold a key for. It's only honored when the caller holds a bridge
+    key (see ApiKey.is_bridge): a trusted neutral relay - e.g. the OKX ASP
+    marketplace integration - arbitrating a dispute between two other
+    wallets it isn't itself a party to. A non-bridge key supplying this
+    field is silently ignored server-side, not rejected."""
 
+    claimant_wallet_id: str | None = None
     respondent_wallet_id: str
     task_description: str
     agreed_deliverable: str

@@ -14,7 +14,7 @@ from app.schemas.report import ConfidenceBreakdown, LayeredReport
 router = APIRouter(prefix="/reports", tags=["reports"])
 
 
-def _to_layered_report(report: Report) -> LayeredReport:
+def to_layered_report(report: Report) -> LayeredReport:
     return LayeredReport(
         id=report.id,
         query=report.query,
@@ -45,7 +45,7 @@ async def get_report(
     if session is None or session.user_id != current_user.id:
         raise NotFoundError("Report not found")
 
-    return _to_layered_report(report)
+    return to_layered_report(report)
 
 
 @router.get("/by-session/{session_id}", response_model=list[LayeredReport])
@@ -61,4 +61,4 @@ async def list_reports_for_session(
     result = await db.execute(
         select(Report).where(Report.session_id == session_id).order_by(Report.created_at)
     )
-    return [_to_layered_report(r) for r in result.scalars().all()]
+    return [to_layered_report(r) for r in result.scalars().all()]
