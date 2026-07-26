@@ -77,9 +77,12 @@ async def file_dispute(
     db.add(dispute)
     await _attach_verified_evidence(dispute, payload.evidence, payload.escrow_amount, chain_service)
     await db.commit()
-    await db.refresh(dispute)
     background_tasks.add_task(_notify_dispute_filed_background, dispute.id)
-    return dispute
+    # A plain refresh() only reloads column attributes and leaves the
+    # `evidence` relationship expired - FastAPI's response serialization
+    # then touches it outside any async-safe context (MissingGreenlet).
+    # Re-fetch with it eagerly loaded instead, same as every read endpoint.
+    return await db.get(Dispute, dispute.id, options=[selectinload(Dispute.evidence)])
 
 
 @router.post("/disputes/agent", response_model=DisputeRead, status_code=201)
@@ -136,7 +139,6 @@ async def create_agent_dispute(
     db.add(dispute)
     await _attach_verified_evidence(dispute, payload.evidence, payload.escrow_amount, chain_service)
     await db.commit()
-    await db.refresh(dispute)
 
     # Retry-safety, not a hard concurrency lock: two truly simultaneous
     # requests with the same idempotency key can both still create a dispute
@@ -147,7 +149,9 @@ async def create_agent_dispute(
 
     background_tasks.add_task(_notify_dispute_filed_background, dispute.id)
     background_tasks.add_task(_run_arbitration_and_notify, dispute.id)
-    return dispute
+    # Same MissingGreenlet concern as file_dispute() above - re-fetch with
+    # `evidence` eagerly loaded instead of a bare refresh().
+    return await db.get(Dispute, dispute.id, options=[selectinload(Dispute.evidence)])
 
 
 @router.get("/disputes/verify-tx", response_model=ChainVerificationRead)
