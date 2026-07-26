@@ -25,7 +25,7 @@ from app.api.deps import (
     get_memory_manager,
     get_orchestrator,
 )
-from app.core.container import get_qdrant, get_redis
+from app.core.container import get_redis
 from app.core.exceptions import NotFoundError
 from app.core.logging import get_logger
 from app.db.models.api_key import ApiKey
@@ -37,7 +37,6 @@ from app.graph.orchestrator import Orchestrator
 from app.memory.episodic import EpisodicMemoryStore
 from app.memory.manager import MemoryManager
 from app.memory.project import ProjectMemoryStore
-from app.memory.semantic import SemanticMemory
 from app.schemas.chat import (
     AgentChatQueryCreate,
     ChatMessageRead,
@@ -121,9 +120,7 @@ async def query(
     db.add(user_message)
     await db.flush()
 
-    memory_context = await memory_manager.recall_context(
-        user_id=current_user.id, query=payload.query
-    )
+    memory_context = await memory_manager.recall_context(user_id=current_user.id)
     cache_key = _report_cache_key(current_user.id, payload.query)
     redis = get_redis()
 
@@ -298,10 +295,8 @@ async def _run_agent_query_and_notify(
     session_factory = get_session_factory()
     async with session_factory() as db:
         try:
-            memory_manager = MemoryManager(
-                SemanticMemory(get_qdrant()), EpisodicMemoryStore(db), ProjectMemoryStore(db)
-            )
-            memory_context = await memory_manager.recall_context(user_id=user_id, query=query)
+            memory_manager = MemoryManager(EpisodicMemoryStore(db), ProjectMemoryStore(db))
+            memory_context = await memory_manager.recall_context(user_id=user_id)
             orchestrator = Orchestrator(
                 get_llm_router(),
                 get_hybrid_retriever(),

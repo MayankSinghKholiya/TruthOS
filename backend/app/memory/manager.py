@@ -1,22 +1,26 @@
-"""Facade unifying semantic, episodic and project memory behind one API used
-by the orchestrator. Compression of raw investigation output into a durable
+"""Facade unifying episodic and project memory behind one API used by the
+orchestrator. Compression of raw investigation output into a durable
 memory entry is the Memory Agent's job (app/agents/memory_agent.py) - this
-manager only persists/retrieves what it's given."""
+manager only persists/retrieves what it's given.
+
+There was a third component here, semantic memory (embedding similarity
+search over past investigation summaries via Qdrant), dropped along with
+the rest of the dense-vector/sentence-transformers stack to keep the
+service's memory footprint inside Render's free-tier limit - recent
+history from episodic memory still gives the Planner real context, just
+not similarity-ranked across the user's entire history."""
 from uuid import UUID
 
 from app.memory.episodic import EpisodicMemoryStore
 from app.memory.project import ProjectMemoryStore
-from app.memory.semantic import SemanticMemory
 
 
 class MemoryManager:
     def __init__(
         self,
-        semantic: SemanticMemory,
         episodic: EpisodicMemoryStore,
         project: ProjectMemoryStore,
     ) -> None:
-        self.semantic = semantic
         self.episodic = episodic
         self.project = project
 
@@ -36,17 +40,12 @@ class MemoryManager:
             entities=entities,
             outcome=outcome,
         )
-        await self.semantic.remember(user_id=str(user_id), summary=summary, entities=entities)
 
-    async def recall_context(self, *, user_id: UUID, query: str) -> str:
+    async def recall_context(self, *, user_id: UUID) -> str:
         """Builds a compact text block of relevant prior memory for the Planner."""
-        semantic_hits = await self.semantic.recall(user_id=str(user_id), query=query)
         episodic_entries = await self.episodic.recent_for_user(user_id, limit=5)
 
         lines = []
-        if semantic_hits:
-            lines.append("Similar past investigations:")
-            lines.extend(f"- {hit.text}" for hit in semantic_hits)
         if episodic_entries:
             lines.append("Recent history:")
             lines.extend(f"- {entry.summary} (outcome: {entry.outcome})" for entry in episodic_entries)

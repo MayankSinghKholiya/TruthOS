@@ -24,7 +24,7 @@ together and [docs/SETUP.md](docs/SETUP.md) to run it locally.
 | -------------- | ----------------------------------------------------------------- |
 | Frontend       | Next.js 15, TypeScript, TailwindCSS, shadcn/ui-style components, Framer Motion, Zustand |
 | Backend        | FastAPI, Python 3.12, LangGraph, Pydantic, SQLAlchemy (async)     |
-| Databases      | PostgreSQL, Redis, Qdrant, Neo4j                                  |
+| Databases      | PostgreSQL, Redis, Neo4j                                          |
 | LLM routing    | OpenRouter (retry + fallback model)                               |
 | Observability  | structlog, Langfuse, PostHog hooks                                |
 | Deployment     | Docker / docker-compose, Railway, Vercel                          |
@@ -36,7 +36,7 @@ truthos/
   backend/    FastAPI app: agents, prompts, RAG, graph, memory, API, tests
   frontend/   Next.js app: chat UI, layered report, evidence dashboard
   docs/       Architecture and setup docs
-docker-compose.yml   Postgres + Redis + Qdrant + Neo4j + backend + frontend
+docker-compose.yml   Postgres + Redis + Neo4j + backend + frontend
 ```
 
 ## Quick start

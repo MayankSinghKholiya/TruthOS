@@ -63,9 +63,9 @@ const CHAT_STAGES: PipelineStage[] = [
       },
       {
         icon: Database,
-        agent: "Hybrid retrieval",
+        agent: "Retrieval ranking",
         detail:
-          "BM25 keyword search, Qdrant dense vectors, and live web search are fused with Reciprocal Rank Fusion into the final ranking.",
+          "Live web and academic search results are ranked by BM25 keyword relevance for the final candidate set.",
       },
       {
         icon: Wrench,

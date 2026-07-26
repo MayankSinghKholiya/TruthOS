@@ -2,15 +2,14 @@
 
 TruthOS favors constructor injection: services declare the clients/repositories
 they need as constructor arguments, and this module is the single place that
-knows how to construct singleton infrastructure clients (Redis, Qdrant, Neo4j,
-HTTP). FastAPI routes pull instances via `app/api/deps.py`, which composes
-these providers - nothing here talks HTTP or knows about routes.
+knows how to construct singleton infrastructure clients (Redis, Neo4j, HTTP).
+FastAPI routes pull instances via `app/api/deps.py`, which composes these
+providers - nothing here talks HTTP or knows about routes.
 """
 from functools import lru_cache
 
 import httpx
 from neo4j import AsyncDriver, AsyncGraphDatabase
-from qdrant_client import AsyncQdrantClient
 from redis.asyncio import Redis, from_url
 
 from app.core.config import get_settings
@@ -20,12 +19,6 @@ from app.core.config import get_settings
 def get_redis() -> Redis:
     settings = get_settings()
     return from_url(settings.redis_url, decode_responses=True)
-
-
-@lru_cache
-def get_qdrant() -> AsyncQdrantClient:
-    settings = get_settings()
-    return AsyncQdrantClient(url=settings.qdrant_url, api_key=settings.qdrant_api_key or None)
 
 
 @lru_cache
@@ -44,6 +37,5 @@ def get_http_client() -> httpx.AsyncClient:
 async def shutdown_container() -> None:
     """Close pooled connections gracefully on app shutdown."""
     await get_redis().aclose()
-    await get_qdrant().close()
     await get_neo4j_driver().close()
     await get_http_client().aclose()

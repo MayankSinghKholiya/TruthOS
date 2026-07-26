@@ -1,10 +1,9 @@
 """In-process BM25 sparse retriever over a document corpus.
 
-For the MVP this indexes whatever documents/snippets are passed in per-query
-(the working set the retriever has already gathered), rather than requiring
-a separately-managed persistent BM25 index - Qdrant remains the system of
-record for persisted documents. This keeps the sparse and dense retrievers
-symmetric: both re-rank the same live candidate pool.
+Indexes whatever documents/snippets were already fetched per-query (the
+working set HybridRetriever's web/academic search gathered), rather than
+maintaining a separately-managed persistent index - this reranks that live
+candidate pool by keyword relevance, it doesn't search a stored corpus.
 """
 from dataclasses import dataclass
 

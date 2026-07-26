@@ -29,19 +29,24 @@ Every agent (`backend/app/agents/*.py`) is a thin subclass of `BaseAgent`
 through `LLMRouter` (`backend/app/services/llm_router.py`), which retries
 transient failures and falls back from `DEFAULT_MODEL` to `FALLBACK_MODEL`.
 
-## Hybrid RAG
+## Retrieval
 
 `backend/app/rag/hybrid_retriever.py` fans a query out across:
 
-- **Dense retrieval** - Qdrant, via BAAI BGE embeddings (`rag/vector_store.py`, `rag/embeddings.py`)
-- **Sparse retrieval** - BM25 over the same candidate pool (`rag/bm25.py`)
 - **Live web search** - Tavily (`services/search_tools.py`)
 - **Academic search** - Semantic Scholar (optional, `services/search_tools.py`)
 
-Candidates are merged with Reciprocal Rank Fusion, then re-ordered by a
-cross-encoder (`rag/reranker.py`) for the final top-k. Metadata filters
-(domain, date) and query expansion (produced by the Retriever agent) are
-applied before fusion.
+Candidates are ranked by BM25 keyword relevance over that pool
+(`rag/bm25.py`) for the final top-k. Metadata filters (domain, date) and
+query expansion (produced by the Retriever agent) are applied before
+ranking.
+
+Dense (Qdrant) vector retrieval and a cross-encoder reranking pass were
+both dropped: loading sentence-transformers/torch for either one reliably
+exceeded the memory budget of the platform's free hosting tier under a
+real query, and the dense side had no ingested documents behind it in
+practice anyway - nothing in the running application ever wrote to that
+collection.
 
 ## Knowledge graph
 
@@ -52,12 +57,17 @@ committed alongside memory in the `commit_memory` node.
 
 ## Memory
 
-Three memory kinds, unified behind `MemoryManager`
+Two memory kinds, unified behind `MemoryManager`
 (`backend/app/memory/manager.py`):
 
-- **Semantic** - embedded investigation summaries in a separate Qdrant collection, searched by similarity
 - **Episodic** - a chronological Postgres log of resolved interactions per user
 - **Project** - long-term rolling key/value context per user
+
+A third kind, semantic memory (embedded investigation summaries in Qdrant,
+searched by similarity), was dropped along with the rest of the
+dense-vector stack for the same memory-budget reason as retrieval above -
+episodic history still gives the Planner real prior context, just not
+similarity-ranked across the user's entire history.
 
 The Memory Agent decides *what* is worth remembering; `MemoryManager` only
 persists/retrieves.
@@ -73,7 +83,7 @@ one weighted score:
 | Freshness | 0.15 | Recency of evidence, linear decay over 3 years |
 | Consensus | 0.25 | How many/severe the Critic's objections were |
 | Evidence quality | 0.25 | Mean reliability of evidence used |
-| Retrieval confidence | 0.15 | Mean cross-encoder relevance score |
+| Retrieval confidence | 0.15 | Mean BM25 relevance score, normalized to [0, 1] |
 
 With zero evidence the score short-circuits to 0 rather than letting neutral
 defaults (e.g. "no objections because there was nothing to object to")
@@ -104,4 +114,4 @@ framing manually off a `fetch()` `ReadableStream`
   wrapper calling one agent; the actual reasoning lives in the agent + its
   prompt template, so nodes are trivially testable in isolation.
 - **MemoryManager persists; MemoryAgent decides.** Keeps the storage facade
-  free of LLM calls and the agent free of SQL/Qdrant details.
+  free of LLM calls and the agent free of SQL details.

@@ -26,11 +26,6 @@ class Settings(BaseSettings):
     # Redis
     redis_url: str = Field(default="redis://localhost:6379/0", alias="REDIS_URL")
 
-    # Qdrant
-    qdrant_url: str = Field(default="http://localhost:6333", alias="QDRANT_URL")
-    qdrant_api_key: str | None = Field(default=None, alias="QDRANT_API_KEY")
-    qdrant_collection: str = Field(default="truthos_documents", alias="QDRANT_COLLECTION")
-
     # Neo4j
     neo4j_uri: str = Field(default="bolt://localhost:7687", alias="NEO4J_URI")
     neo4j_user: str = Field(default="neo4j", alias="NEO4J_USER")
@@ -42,9 +37,6 @@ class Settings(BaseSettings):
     default_model: str = Field(default="anthropic/claude-sonnet-4.5", alias="DEFAULT_MODEL")
     fallback_model: str = Field(default="openai/gpt-4o-mini", alias="FALLBACK_MODEL")
     judge_model: str = Field(default="anthropic/claude-opus-4.1", alias="JUDGE_MODEL")
-
-    # Embeddings
-    embedding_model: str = Field(default="BAAI/bge-small-en-v1.5", alias="EMBEDDING_MODEL")
 
     # External APIs
     tavily_api_key: str = Field(default="", alias="TAVILY_API_KEY")

@@ -1,9 +1,11 @@
-"""Hybrid RAG pipeline: BM25 (sparse) + Qdrant (dense) + live web search are
-fused with Reciprocal Rank Fusion, whose ranking is the final order (no
-cross-encoder reranking pass - dropped to keep the service's memory
-footprint inside Render's free-tier limit; a real query load reliably
-OOM-killed the container with both an embedding and a cross-encoder model
-resident). Query expansion is applied upstream by the Retriever agent
+"""RAG pipeline: live web (+ academic) search results are ranked by BM25
+keyword relevance. Dense (Qdrant) vector search and cross-encoder
+reranking were both dropped to keep the service's memory footprint inside
+Render's free-tier 512MB limit - loading sentence-transformers/torch for
+either one reliably OOM-killed the container on a real query, and dense
+retrieval had no ingested documents behind it in practice anyway (nothing
+in the running application ever wrote to that collection). Query
+expansion is applied upstream by the Retriever agent
 (app/agents/retriever.py), which supplies the list of `queries` this class
 fans out over.
 """
@@ -13,12 +15,9 @@ from typing import Any
 
 from app.core.logging import get_logger
 from app.rag.bm25 import BM25Document, BM25Index
-from app.rag.vector_store import VectorStore
 from app.services.search_tools import SemanticScholarTool, TavilySearchTool
 
 logger = get_logger(__name__)
-
-_RRF_K = 60  # standard reciprocal-rank-fusion damping constant
 
 
 @dataclass
@@ -30,21 +29,14 @@ class RetrievedChunk:
     source: str
     retrieval_score: float = 0.0
     metadata: dict[str, Any] = field(default_factory=dict)
-    # This chunk's rank within its OWN query's dense-search hits (0 = most
-    # similar), not its position in the final concatenated candidate list.
-    # None for non-dense sources (web/academic), which don't participate in
-    # the dense side of RRF fusion at all - see HybridRetriever._fuse.
-    dense_rank: int | None = None
 
 
 class HybridRetriever:
     def __init__(
         self,
-        vector_store: VectorStore,
         web_search: TavilySearchTool,
         academic_search: SemanticScholarTool | None = None,
     ) -> None:
-        self._vector_store = vector_store
         self._web_search = web_search
         self._academic_search = academic_search
 
@@ -58,9 +50,9 @@ class HybridRetriever:
         domain_filter: list[str] | None = None,
         date_after: str | None = None,
     ) -> list[RetrievedChunk]:
-        # Every query's dense/web/academic lookups are independent network
-        # calls - fan them all out concurrently instead of awaiting one at a
-        # time, since with query expansion producing several queries per
+        # Every query's web/academic lookups are independent network calls -
+        # fan them all out concurrently instead of awaiting one at a time,
+        # since with query expansion producing several queries per
         # sub-task, sequential awaits were the single biggest latency
         # contributor in the pipeline.
         per_query_results = await asyncio.gather(
@@ -77,34 +69,22 @@ class HybridRetriever:
         if not candidates:
             return []
 
-        fused = self._fuse(candidates, queries)
-        return fused[:top_k]
+        ranked = self._rank_by_bm25(candidates, queries)
+        return ranked[:top_k]
 
     async def _fetch_for_query(
         self, query: str, top_k: int, include_web: bool, include_academic: bool
     ) -> list[RetrievedChunk]:
-        tasks: list = [self._vector_store.search(query, top_k=top_k)]
+        tasks: list = []
         if include_web:
             tasks.append(self._web_search.search(query, max_results=top_k))
         if include_academic and self._academic_search:
             tasks.append(self._academic_search.search(query, max_results=top_k))
 
-        results = await asyncio.gather(*tasks)
-        dense_hits = results[0]
-        chunks = [
-            RetrievedChunk(
-                text=hit.text,
-                source_url=hit.metadata.get("url"),
-                source_title=hit.metadata.get("title"),
-                published_at=hit.metadata.get("published_at"),
-                source="knowledge_base",
-                metadata=hit.metadata,
-                dense_rank=rank,
-            )
-            for rank, hit in enumerate(dense_hits)
-        ]
+        results = await asyncio.gather(*tasks) if tasks else []
+        chunks: list[RetrievedChunk] = []
 
-        remaining = results[1:]
+        remaining = list(results)
         if include_web:
             web_hits = remaining.pop(0)
             chunks.extend(
@@ -133,44 +113,26 @@ class HybridRetriever:
             )
         return chunks
 
-    def _fuse(
+    def _rank_by_bm25(
         self, candidates: list[RetrievedChunk], queries: list[str]
     ) -> list[RetrievedChunk]:
-        """Reciprocal Rank Fusion across BM25 rank and each chunk's own
-        per-query dense-search rank. This ranking is final (no reranking
-        pass follows) - the returned chunks' retrieval_score is set from
-        fused rank position, min-max normalized to [0, 1] so Confidence
-        DNA's retrieval_confidence signal and evidence_utils' reliability
-        weighting still get a meaningfully-spread score, not the raw RRF
-        sum (max ~1/60+1/60, which would read as uniformly "low" regardless
-        of actual relevance).
-
-        Earlier this used the chunk's position in the fully concatenated
-        candidate list (across every query and source) as a stand-in for
-        dense rank. That's wrong whenever there's more than one query: a
-        dense hit ranked #0 for query 2 would still lose to a dense hit
-        ranked #3 for query 1, purely because query 1's results were
-        concatenated first - a list-position artifact, not a relevance
-        signal. Using RetrievedChunk.dense_rank (each hit's rank within its
-        own query's dense results) fixes that; BM25 rank stays global since
-        BM25 is inherently a whole-corpus statistic, not a per-query one.
-        """
+        """Ranks candidates by BM25 keyword relevance against the joined
+        queries, dedupes by source (keeping each duplicate's best rank),
+        and sets retrieval_score from rank position, min-max normalized to
+        [0, 1] so Confidence DNA's retrieval_confidence signal and
+        evidence_utils' reliability weighting get a meaningfully-spread
+        score rather than a raw BM25 statistic on an arbitrary scale."""
         bm25_docs = [BM25Document(doc_id=str(i), text=c.text) for i, c in enumerate(candidates)]
         bm25_index = BM25Index(bm25_docs)
         bm25_ranked = bm25_index.search(" ".join(queries), top_k=len(candidates))
-        bm25_rank_by_id = {doc.doc_id: rank for rank, (doc, _) in enumerate(bm25_ranked)}
-
-        scores: dict[int, float] = {}
-        for i, candidate in enumerate(candidates):
-            dense_rank = candidate.dense_rank if candidate.dense_rank is not None else len(candidates)
-            bm25_rank = bm25_rank_by_id.get(str(i), len(candidates))
-            scores[i] = 1 / (_RRF_K + dense_rank) + 1 / (_RRF_K + bm25_rank)
+        scores = {int(doc.doc_id): score for doc, score in bm25_ranked}
 
         deduped: dict[str, tuple[RetrievedChunk, float]] = {}
         for i, candidate in enumerate(candidates):
+            score = scores.get(i, 0.0)
             key = candidate.source_url or candidate.text[:120]
-            if key not in deduped or scores[i] > deduped[key][1]:
-                deduped[key] = (candidate, scores[i])
+            if key not in deduped or score > deduped[key][1]:
+                deduped[key] = (candidate, score)
 
         ranked = sorted(deduped.values(), key=lambda pair: pair[1], reverse=True)
         raw_scores = [score for _, score in ranked]

@@ -31,16 +31,6 @@ services:
       timeout: 5s
       retries: 10
 
-  qdrant:
-    image: qdrant/qdrant:latest
-    container_name: truthos_qdrant
-    restart: unless-stopped
-    ports:
-      - "6333:6333"
-      - "6334:6334"
-    volumes:
-      - qdrant_storage:/qdrant/storage
-
   neo4j:
     image: neo4j:5-community
     container_name: truthos_neo4j
@@ -65,7 +55,6 @@ services:
     environment:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-truthos}:${POSTGRES_PASSWORD:-truthos}@postgres:5432/${POSTGRES_DB:-truthos}
       REDIS_URL: redis://redis:6379/0
-      QDRANT_URL: http://qdrant:6333
       NEO4J_URI: bolt://neo4j:7687
     ports:
       - "8000:8000"
@@ -74,8 +63,6 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-      qdrant:
-        condition: service_started
       neo4j:
         condition: service_started
     volumes:
@@ -97,5 +84,4 @@ services:
 volumes:
   pgdata:
   redis_data:
-  qdrant_storage:
   neo4j_data:

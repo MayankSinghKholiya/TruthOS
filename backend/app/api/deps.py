@@ -12,7 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
-from app.core.container import get_http_client, get_neo4j_driver, get_qdrant
+from app.core.container import get_http_client, get_neo4j_driver
 from app.core.security import decode_token, hash_api_key
 from app.db.models.api_key import ApiKey
 from app.db.models.telegram import TelegramLink
@@ -24,9 +24,7 @@ from app.graph.orchestrator import Orchestrator
 from app.memory.episodic import EpisodicMemoryStore
 from app.memory.manager import MemoryManager
 from app.memory.project import ProjectMemoryStore
-from app.memory.semantic import SemanticMemory
 from app.rag.hybrid_retriever import HybridRetriever
-from app.rag.vector_store import VectorStore
 from app.services.chain_verification import ChainVerificationService, parse_rpc_url_overrides
 from app.services.llm_router import LLMRouter
 from app.services.market_data import MarketDataService
@@ -128,10 +126,9 @@ def get_llm_router() -> LLMRouter:
 
 
 def get_hybrid_retriever() -> HybridRetriever:
-    vector_store = VectorStore(get_qdrant())
     web_search = TavilySearchTool(get_http_client())
     academic_search = SemanticScholarTool(get_http_client())
-    return HybridRetriever(vector_store, web_search, academic_search)
+    return HybridRetriever(web_search, academic_search)
 
 
 def get_knowledge_graph() -> KnowledgeGraph:
@@ -139,10 +136,9 @@ def get_knowledge_graph() -> KnowledgeGraph:
 
 
 def get_memory_manager(db: AsyncSession = Depends(get_db)) -> MemoryManager:
-    semantic = SemanticMemory(get_qdrant())
     episodic = EpisodicMemoryStore(db)
     project = ProjectMemoryStore(db)
-    return MemoryManager(semantic, episodic, project)
+    return MemoryManager(episodic, project)
 
 
 def get_market_data_service() -> MarketDataService:
