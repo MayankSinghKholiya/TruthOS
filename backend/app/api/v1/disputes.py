@@ -78,11 +78,14 @@ async def file_dispute(
     await _attach_verified_evidence(dispute, payload.evidence, payload.escrow_amount, chain_service)
     await db.commit()
     background_tasks.add_task(_notify_dispute_filed_background, dispute.id)
-    # A plain refresh() only reloads column attributes and leaves the
-    # `evidence` relationship expired - FastAPI's response serialization
-    # then touches it outside any async-safe context (MissingGreenlet).
-    # Re-fetch with it eagerly loaded instead, same as every read endpoint.
-    return await db.get(Dispute, dispute.id, options=[selectinload(Dispute.evidence)])
+    # commit() expires every attribute including the `evidence` relationship;
+    # FastAPI's response serialization then touches it outside any
+    # async-safe context (MissingGreenlet). db.get() with a loader option
+    # doesn't reliably fix this - `dispute` is already in this session's
+    # identity map, so get() can take that shortcut and skip the option
+    # entirely. refresh(attribute_names=...) forces the actual reload.
+    await db.refresh(dispute, attribute_names=["evidence"])
+    return dispute
 
 
 @router.post("/disputes/agent", response_model=DisputeRead, status_code=201)
@@ -149,9 +152,9 @@ async def create_agent_dispute(
 
     background_tasks.add_task(_notify_dispute_filed_background, dispute.id)
     background_tasks.add_task(_run_arbitration_and_notify, dispute.id)
-    # Same MissingGreenlet concern as file_dispute() above - re-fetch with
-    # `evidence` eagerly loaded instead of a bare refresh().
-    return await db.get(Dispute, dispute.id, options=[selectinload(Dispute.evidence)])
+    # Same MissingGreenlet concern as file_dispute() above.
+    await db.refresh(dispute, attribute_names=["evidence"])
+    return dispute
 
 
 @router.get("/disputes/verify-tx", response_model=ChainVerificationRead)
