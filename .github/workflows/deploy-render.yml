@@ -1,0 +1,24 @@
+name: Deploy backend to Render
+
+# Render's own GitHub integration isn't wired up for this repo (no webhook
+# was ever registered - the service was created directly via Render's API
+# rather than through its GitHub App install flow), so this calls Render's
+# deploy API directly instead, using the same endpoint verified manually
+# throughout development.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "backend/**"
+      - ".github/workflows/deploy-render.yml"
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger Render deploy
+        run: |
+          curl -sf -X POST "https://api.render.com/v1/services/srv-d9itptrtqb8s739e7tb0/deploys" \
+            -H "Authorization: Bearer ${{ secrets.RENDER_API_KEY }}" \
+            -H "Content-Type: application/json" \
+            -d '{}'
