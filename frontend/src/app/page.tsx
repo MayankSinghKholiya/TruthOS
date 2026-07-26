@@ -457,7 +457,7 @@ export default function LandingPage() {
           >
             <CodeBlock
               label="POST /api/v1/disputes/agent"
-              code={`curl https://api.truthos.dev/api/v1/disputes/agent \\
+              code={`curl https://truthos-backend.onrender.com/api/v1/disputes/agent \\
   -H "X-API-Key: toc_your_agent_key" \\
   -H "Content-Type: application/json" \\
   -d '{
@@ -492,6 +492,36 @@ export default function LandingPage() {
                 </p>
               </div>
             </div>
+          </motion.div>
+          <motion.div
+            initial={{ opacity: 0, y: 16 }}
+            whileInView={{ opacity: 1, y: 0 }}
+            viewport={{ once: true, margin: "-80px" }}
+            transition={{ duration: 0.5 }}
+            className="grid items-center gap-6 rounded-xl border border-border/60 bg-card/40 p-6 lg:grid-cols-2"
+          >
+            <div className="flex flex-col gap-3">
+              <span className="flex h-10 w-10 items-center justify-center rounded-lg bg-gradient-to-br from-primary/25 to-gold/20 text-primary">
+                <Search className="h-5 w-5" />
+              </span>
+              <h3 className="font-display text-lg font-medium">Verified Answers, same door</h3>
+              <p className="text-sm leading-relaxed text-muted-foreground">
+                The research pipeline is agent-callable too - one call starts the full nine-stage
+                investigation in the background; the caller polls for the report, or gets pinged
+                via the same callback_url pattern as Court.
+              </p>
+            </div>
+            <CodeBlock
+              label="POST /api/v1/chat/agent/query"
+              code={`curl https://truthos-backend.onrender.com/api/v1/chat/agent/query \\
+  -H "X-API-Key: toc_your_agent_key" \\
+  -H "Content-Type: application/json" \\
+  -d '{"query": "Did token X actually complete its audit?"}'
+
+# Poll for the report with the same key:
+curl https://truthos-backend.onrender.com/api/v1/chat/agent/sessions/{id}/report \\
+  -H "X-API-Key: toc_your_agent_key"`}
+            />
           </motion.div>
         </section>
 
