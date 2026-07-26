@@ -65,7 +65,7 @@ const CHAT_STAGES: PipelineStage[] = [
         icon: Database,
         agent: "Hybrid retrieval",
         detail:
-          "BM25 keyword search, Qdrant dense vectors, and live web search are fused with Reciprocal Rank Fusion, then re-ordered by a cross-encoder for the final ranking.",
+          "BM25 keyword search, Qdrant dense vectors, and live web search are fused with Reciprocal Rank Fusion into the final ranking.",
       },
       {
         icon: Wrench,

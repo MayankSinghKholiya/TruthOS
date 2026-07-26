@@ -45,9 +45,6 @@ class Settings(BaseSettings):
 
     # Embeddings
     embedding_model: str = Field(default="BAAI/bge-small-en-v1.5", alias="EMBEDDING_MODEL")
-    cross_encoder_model: str = Field(
-        default="cross-encoder/ms-marco-MiniLM-L-6-v2", alias="CROSS_ENCODER_MODEL"
-    )
 
     # External APIs
     tavily_api_key: str = Field(default="", alias="TAVILY_API_KEY")

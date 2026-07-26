@@ -1,8 +1,11 @@
 """Hybrid RAG pipeline: BM25 (sparse) + Qdrant (dense) + live web search are
-fused with Reciprocal Rank Fusion, then the fused candidate pool is
-re-ordered by a cross-encoder for the final top-k. Query expansion is
-applied upstream by the Retriever agent (app/agents/retriever.py), which
-supplies the list of `queries` this class fans out over.
+fused with Reciprocal Rank Fusion, whose ranking is the final order (no
+cross-encoder reranking pass - dropped to keep the service's memory
+footprint inside Render's free-tier limit; a real query load reliably
+OOM-killed the container with both an embedding and a cross-encoder model
+resident). Query expansion is applied upstream by the Retriever agent
+(app/agents/retriever.py), which supplies the list of `queries` this class
+fans out over.
 """
 import asyncio
 from dataclasses import dataclass, field
@@ -10,7 +13,6 @@ from typing import Any
 
 from app.core.logging import get_logger
 from app.rag.bm25 import BM25Document, BM25Index
-from app.rag.reranker import rerank
 from app.rag.vector_store import VectorStore
 from app.services.search_tools import SemanticScholarTool, TavilySearchTool
 
@@ -76,7 +78,7 @@ class HybridRetriever:
             return []
 
         fused = self._fuse(candidates, queries)
-        return self._cross_encoder_rerank(fused, queries[0] if queries else "", top_k)
+        return fused[:top_k]
 
     async def _fetch_for_query(
         self, query: str, top_k: int, include_web: bool, include_academic: bool
@@ -135,7 +137,13 @@ class HybridRetriever:
         self, candidates: list[RetrievedChunk], queries: list[str]
     ) -> list[RetrievedChunk]:
         """Reciprocal Rank Fusion across BM25 rank and each chunk's own
-        per-query dense-search rank.
+        per-query dense-search rank. This ranking is final (no reranking
+        pass follows) - the returned chunks' retrieval_score is set from
+        fused rank position, min-max normalized to [0, 1] so Confidence
+        DNA's retrieval_confidence signal and evidence_utils' reliability
+        weighting still get a meaningfully-spread score, not the raw RRF
+        sum (max ~1/60+1/60, which would read as uniformly "low" regardless
+        of actual relevance).
 
         Earlier this used the chunk's position in the fully concatenated
         candidate list (across every query and source) as a stand-in for
@@ -165,21 +173,12 @@ class HybridRetriever:
                 deduped[key] = (candidate, scores[i])
 
         ranked = sorted(deduped.values(), key=lambda pair: pair[1], reverse=True)
+        raw_scores = [score for _, score in ranked]
+        lo, hi = min(raw_scores), max(raw_scores)
+        spread = hi - lo
+        for chunk, score in ranked:
+            chunk.retrieval_score = ((score - lo) / spread) if spread > 0 else 1.0
         return [c for c, _ in ranked]
-
-    def _cross_encoder_rerank(
-        self, fused: list[RetrievedChunk], query: str, top_k: int
-    ) -> list[RetrievedChunk]:
-        if not query:
-            return fused[:top_k]
-        texts = [c.text for c in fused]
-        reranked = rerank(query, texts, top_k=top_k)
-        results = []
-        for index, score in reranked:
-            chunk = fused[index]
-            chunk.retrieval_score = float(score)
-            results.append(chunk)
-        return results
 
 
 def _apply_metadata_filters(

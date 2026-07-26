@@ -46,26 +46,57 @@ class _FakeWebSearch:
         return self._hits
 
 
-async def test_hybrid_retriever_fuses_and_reranks(monkeypatch):
+async def test_hybrid_retriever_retrieve_returns_fused_order_directly():
+    dense_hits = [VectorHit(doc_id="1", text="Paris is the capital of France", score=0.9, metadata={})]
     web_hits = [
-        {"title": "A", "url": "https://a.com", "snippet": "Paris is the capital of France", "published_at": None},
         {"title": "B", "url": "https://b.com", "snippet": "Bananas are yellow", "published_at": None},
     ]
-    retriever = HybridRetriever(_FakeVectorStore(), _FakeWebSearch(web_hits))
-
-    def fake_rerank(query, candidates, top_k=8):
-        # force the France-related candidate to rank first regardless of order
-        scored = [(i, 1.0 if "France" in c else 0.1) for i, c in enumerate(candidates)]
-        return sorted(scored, key=lambda p: p[1], reverse=True)[:top_k]
-
-    monkeypatch.setattr("app.rag.hybrid_retriever.rerank", fake_rerank)
+    retriever = HybridRetriever(_FakeVectorStore(dense_hits), _FakeWebSearch(web_hits))
 
     results: list[RetrievedChunk] = await retriever.retrieve(
         ["What is the capital of France?"], top_k=2
     )
 
+    # The dense hit (rank 0 in both dense search and, since its text shares
+    # "capital"/"France" with the query, BM25) should fuse ahead of the
+    # unrelated web hit - no reranking pass follows fusion anymore.
     assert results
     assert "France" in results[0].text
+
+
+def test_fuse_sets_retrieval_score_normalized_to_unit_range():
+    retriever = HybridRetriever(_FakeVectorStore(), _FakeWebSearch([]))
+    candidates = [
+        RetrievedChunk(
+            text="best match for the query", source_url="https://best.example", source_title="Best",
+            published_at=None, source="knowledge_base", dense_rank=0,
+        ),
+        RetrievedChunk(
+            text="unrelated filler text", source_url="https://worst.example", source_title="Worst",
+            published_at=None, source="knowledge_base", dense_rank=50,
+        ),
+    ]
+
+    fused = retriever._fuse(candidates, ["query about the best match"])
+
+    assert fused[0].source_url == "https://best.example"
+    assert fused[0].retrieval_score == 1.0
+    assert fused[-1].retrieval_score == 0.0
+    assert all(0.0 <= c.retrieval_score <= 1.0 for c in fused)
+
+
+def test_fuse_single_candidate_gets_full_score_not_division_by_zero():
+    retriever = HybridRetriever(_FakeVectorStore(), _FakeWebSearch([]))
+    candidates = [
+        RetrievedChunk(
+            text="only candidate", source_url="https://only.example", source_title="Only",
+            published_at=None, source="knowledge_base", dense_rank=0,
+        ),
+    ]
+
+    fused = retriever._fuse(candidates, ["query"])
+
+    assert fused[0].retrieval_score == 1.0
 
 
 async def test_fetch_for_query_assigns_dense_rank_by_position_within_the_query():
