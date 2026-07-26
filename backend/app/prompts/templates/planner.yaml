@@ -8,11 +8,13 @@ system: |
   For each sub-task specify:
   - objective: what must be established
   - assigned_agent: one of [research, retriever, finance, legal, coder]
-  - requires_web: whether live web retrieval is needed
   - requires_kg: whether the knowledge graph should be consulted
 
+  Every sub-task automatically gets live web retrieval - it's the only
+  evidence source available, so it is never optional.
+
   Respond ONLY with strict JSON matching:
-  {"sub_tasks": [{"objective": str, "assigned_agent": str, "requires_web": bool, "requires_kg": bool}], "plan_rationale": str}
+  {"sub_tasks": [{"objective": str, "assigned_agent": str, "requires_kg": bool}], "plan_rationale": str}
 user: |
   User query: $query
 

@@ -118,7 +118,7 @@ class Orchestrator:
             memory=state.get("memory_context", ""),
         )
         sub_tasks = result.output.get("sub_tasks") or [
-            {"objective": state["query"], "assigned_agent": "research", "requires_web": True}
+            {"objective": state["query"], "assigned_agent": "research"}
         ]
         return {
             "sub_tasks": sub_tasks,
@@ -186,9 +186,12 @@ class Orchestrator:
         queries = expansion.output.get("queries", [objective])
         filters = expansion.output.get("filters") or {}
 
+        # include_web is not Planner-controllable (unlike requires_kg) - web
+        # search is the only evidence source retrieval has (dense/knowledge-
+        # base retrieval was dropped for memory reasons), so a sub-task
+        # skipping it would guarantee empty evidence, not a cost saving.
         chunks = await self._retriever_svc.retrieve(
             queries,
-            include_web=sub_task.get("requires_web", True),
             domain_filter=filters.get("domains") or None,
             date_after=filters.get("date_after") or None,
         )

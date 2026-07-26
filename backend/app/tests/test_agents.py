@@ -11,7 +11,6 @@ async def test_planner_agent_returns_ok_when_subtasks_present(fake_llm_router):
                 {
                     "objective": "check X",
                     "assigned_agent": "research",
-                    "requires_web": True,
                     "requires_kg": False,
                 }
             ],
